@@ -2,123 +2,183 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>CN Handwriting Recognition</title>
+  <title>Chinese Handwriting Recognition</title>
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
-  <style> body { font-family: Arial; } canvas { border: 1px solid #000; } </style>
+  <style>
+    body { 
+      font-family: Arial, sans-serif; 
+      margin: 20px; 
+      text-align: center; 
+    }
+    canvas { 
+      border: 3px solid #333; 
+      background: white; 
+      margin: 15px; 
+    }
+    #result { 
+      font-size: 2em; 
+      margin: 20px; 
+      min-height: 80px; 
+    }
+    #status { 
+      color: #666; 
+      margin: 10px; 
+    }
+  </style>
 </head>
 <body>
-  <h1>Chinese Handwriting Recognition (in Browser)</h1>
-  <input type="file" id="fileInput" accept="image/*">
-  <br><br>
-  <canvas id="canvas" width="300" height="300"></canvas>
-  <p>Prediction: <strong id="result">-</strong></p>
+  <h1>Chinese Handwriting Recognition</h1>
+  
+  <input type="file" id="fileInput" accept="image/*"><br><br>
+  <canvas id="canvas" width="400" height="400"></canvas>
+  
+  <div id="status">Loading character table...</div>
+  <div id="result">Prediction: <strong>-</strong><br>Confidence: -</div>
 
   <script type="module">
     import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.mjs';
 
-    let session;
+    let session = null;
+    let charTable = {};        // Will be populated from CSV
     const targetSize = 64;
+    const HF_REPO = "williamhehe/ChineseHandwritingAnalyzer";   // ← CHANGE THIS
 
-    async function loadModel() {
-      session = await ort.InferenceSession.create(
-        'https://huggingface.co/yourusername/cn-handwriting-model/resolve/main/model.onnx',
-        { executionProviders: ['wasm'] }   // change to 'webgpu' if supported and you want speed
-      );
-      console.log("Model loaded successfully");
+    // Load character table dynamically from Hugging Face
+    async function loadCharTable() {
+      try {
+        const url = `https://huggingface.co/${HF_REPO}/resolve/main/table.csv`;
+        const response = await fetch(url);
+        
+        if (!response.ok) throw new Error("Failed to load table.csv");
+
+        const text = await response.text();
+        const lines = text.trim().split("\n");
+
+        lines.slice(1).forEach(line => {   // skip header
+          if (line.trim() === "") return;
+          const [idxStr, ...charParts] = line.split(",");
+          const idx = parseInt(idxStr.trim());
+          const character = charParts.join(",").trim();   // handles commas in character names if any
+          if (!isNaN(idx)) {
+            charTable[idx] = character;
+          }
+        });
+
+        document.getElementById("status").textContent = `✅ Loaded ${Object.keys(charTable).length} characters`;
+        console.log(`✅ Loaded ${Object.keys(charTable).length} characters from char_table.csv`);
+      } catch (err) {
+        console.error("Failed to load character table:", err);
+        document.getElementById("status").innerHTML = 
+          `❌ Failed to load char_table.csv<br>Please make sure it's uploaded to your HF repo`;
+      }
     }
 
-    // Exact replica of your Python preprocessing in JavaScript
+    async function loadModel() {
+      try {
+        const modelUrl = `https://huggingface.co/${HF_REPO}/resolve/main/model/model.onnx`;
+        session = await ort.InferenceSession.create(modelUrl, {
+          executionProviders: ["wasm"]
+        });
+        console.log("✅ ONNX model loaded");
+      } catch (err) {
+        console.error("Model load failed:", err);
+      }
+    }
+
+    // Exact preprocessing (matches your Python code)
     async function preprocessImage(file) {
       const img = new Image();
       img.src = URL.createObjectURL(file);
       await new Promise(r => img.onload = r);
 
-      const canvas = document.getElementById('canvas');
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const displayCanvas = document.getElementById("canvas");
+      const ctx = displayCanvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, displayCanvas.width, displayCanvas.height);
 
-      // Step 1: Draw original image
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      let data = imageData.data;
+      // 64x64 working canvas
+      const workCanvas = document.createElement("canvas");
+      workCanvas.width = workCanvas.height = targetSize;
+      const wctx = workCanvas.getContext("2d");
 
-      // Convert to grayscale
-      let gray = new Uint8Array(canvas.width * canvas.height);
-      for (let i = 0; i < data.length; i += 4) {
-        gray[i/4] = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];  // luminance
-      }
+      wctx.fillStyle = "#FFFFFF";  // white padding
+      wctx.fillRect(0, 0, targetSize, targetSize);
 
-      // Step 2: Resize and pad to 64x64 with white padding (value=255)
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = targetSize;
-      tempCanvas.height = targetSize;
-      const tctx = tempCanvas.getContext('2d');
-      tctx.fillStyle = '#FFFFFF';           // white background
-      tctx.fillRect(0, 0, targetSize, targetSize);
-
-      const scale = Math.min(targetSize / canvas.width, targetSize / canvas.height);
-      const newW = Math.floor(canvas.width * scale);
-      const newH = Math.floor(canvas.height * scale);
+      const scale = Math.min(targetSize / img.width, targetSize / img.height);
+      const newW = Math.floor(img.width * scale);
+      const newH = Math.floor(img.height * scale);
       const offsetX = Math.floor((targetSize - newW) / 2);
       const offsetY = Math.floor((targetSize - newH) / 2);
 
-      tctx.drawImage(img, offsetX, offsetY, newW, newH);   // resize with aspect ratio
+      wctx.drawImage(img, offsetX, offsetY, newW, newH);
 
-      // Get the padded grayscale data
-      let paddedData = tctx.getImageData(0, 0, targetSize, targetSize).data;
-      let grayPadded = new Float32Array(targetSize * targetSize);
+      const imageData = wctx.getImageData(0, 0, targetSize, targetSize);
+      const data = imageData.data;
 
-      for (let i = 0; i < paddedData.length; i += 4) {
-        grayPadded[i/4] = paddedData[i];   // R channel (grayscale)
+      let gray = new Float32Array(targetSize * targetSize);
+      for (let i = 0; i < data.length; i += 4) {
+        const grayVal = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        gray[i / 4] = grayVal < 180 ? 0 : 255;   // binary threshold
       }
 
-      // Step 3: Simple threshold (approximating Otsu — you can improve this)
-      // For better Otsu in JS it's complex; many people use a fixed threshold like 200 or adaptive.
-      // For now: simple threshold
-      for (let i = 0; i < grayPadded.length; i++) {
-        grayPadded[i] = grayPadded[i] < 200 ? 0 : 255;   // adjust threshold if needed
+      // Normalize to [0.0, 1.0]
+      for (let i = 0; i < gray.length; i++) {
+        gray[i] /= 255.0;
       }
 
-      // Step 4: Normalize to 0.0 - 1.0  (black=0, white=1 ? Wait — check your training!)
-      // In your code: after threshold, / 255.0  → so black ink = 0, white bg = 1
-      for (let i = 0; i < grayPadded.length; i++) {
-        grayPadded[i] = grayPadded[i] / 255.0;
-      }
+      return new ort.Tensor("float32", gray, [1, 1, targetSize, targetSize]);
+    }
 
-      // Final tensor: [1, 1, 64, 64]
-      return new ort.Tensor('float32', grayPadded, [1, 1, targetSize, targetSize]);
+    function softmax(logits) {
+      const max = Math.max(...logits);
+      const exps = logits.map(x => Math.exp(x - max));
+      const sum = exps.reduce((a, b) => a + b, 0);
+      return exps.map(x => x / sum);
     }
 
     async function runInference(file) {
       if (!session) await loadModel();
+      if (Object.keys(charTable).length === 0) {
+        document.getElementById("result").innerHTML = "Waiting for character table to load...";
+        return;
+      }
 
       const inputTensor = await preprocessImage(file);
-      const feeds = { "input": inputTensor };
+      const results = await session.run({ "input": inputTensor });
+      
+      const logits = Array.from(results.output.data);
+      const probs = softmax(logits);
 
-      const results = await session.run(feeds);
-      const output = results.output.data;   // or results["output"] depending on name
+      let maxProb = 0;
+      let predIdx = 0;
 
-      // TODO: Decode your output to Chinese character
-      // Example if it's classification: argmax
-      let maxIdx = 0;
-      let maxProb = output[0];
-      for (let i = 1; i < output.length; i++) {
-        if (output[i] > maxProb) {
-          maxProb = output[i];
-          maxIdx = i;
+      for (let i = 0; i < probs.length; i++) {
+        if (probs[i] > maxProb) {
+          maxProb = probs[i];
+          predIdx = i;
         }
       }
-      document.getElementById('result').textContent = `Class ${maxIdx} (prob: ${maxProb.toFixed(3)})`;
-      // Replace with your actual label mapping (e.g. Chinese characters)
+
+      const character = charTable[predIdx] || `Unknown (${predIdx})`;
+      const confidence = (maxProb * 100).toFixed(1) + "%";
+
+      document.getElementById("result").innerHTML = 
+        `Prediction: <strong>${character}</strong><br>Confidence: ${confidence}`;
     }
 
-    document.getElementById('fileInput').addEventListener('change', (e) => {
+    // Event listener
+    document.getElementById("fileInput").addEventListener("change", (e) => {
       if (e.target.files.length > 0) {
         runInference(e.target.files[0]);
       }
     });
 
-    // Load model on page start
-    loadModel();
+    // Initialize everything
+    async function init() {
+      await loadCharTable();
+      await loadModel();
+    }
+
+    init();
   </script>
 </body>
 </html>
