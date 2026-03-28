@@ -136,33 +136,58 @@
     }
 
     async function runInference(file) {
-      if (!session) await loadModel();
+      if (!session) {
+          await loadModel();
+      }
       if (Object.keys(charTable).length === 0) {
-        document.getElementById("result").innerHTML = "Waiting for character table to load...";
-        return;
+          document.getElementById("result").innerHTML = "Character table not loaded yet.";
+          return;
       }
-
+  
       const inputTensor = await preprocessImage(file);
-      const results = await session.run({ "input": inputTensor });
-      
-      const logits = Array.from(results.output.data);
-      const probs = softmax(logits);
-
-      let maxProb = 0;
-      let predIdx = 0;
-
-      for (let i = 0; i < probs.length; i++) {
-        if (probs[i] > maxProb) {
-          maxProb = probs[i];
-          predIdx = i;
-        }
+  
+      // ✅ FIXED: Try both common input names
+      const feeds = {
+          "input": inputTensor,      // most common
+          "input.1": inputTensor     // what PyTorch often uses
+      };
+  
+      try {
+          const results = await session.run(feeds);
+  
+          // Get the output - try common output names
+          let logits;
+          if (results.output) {
+              logits = Array.from(results.output.data);
+          } else if (results["output.1"]) {
+              logits = Array.from(results["output.1"].data);
+          } else {
+              // Fallback: take the first output
+              logits = Array.from(Object.values(results)[0].data);
+          }
+  
+          const probs = softmax(logits);
+  
+          let maxProb = 0;
+          let predIdx = 0;
+  
+          for (let i = 0; i < probs.length; i++) {
+              if (probs[i] > maxProb) {
+                  maxProb = probs[i];
+                  predIdx = i;
+              }
+          }
+  
+          const character = charTable[predIdx] || `Unknown (${predIdx})`;
+          const confidence = (maxProb * 100).toFixed(1) + "%";
+  
+          document.getElementById("result").innerHTML = 
+              `Prediction: <strong>${character}</strong><br>Confidence: ${confidence}`;
+  
+      } catch (err) {
+          console.error("Inference error:", err);
+          document.getElementById("result").innerHTML = "Inference failed. Check console.";
       }
-
-      const character = charTable[predIdx] || `Unknown (${predIdx})`;
-      const confidence = (maxProb * 100).toFixed(1) + "%";
-
-      document.getElementById("result").innerHTML = 
-        `Prediction: <strong>${character}</strong><br>Confidence: ${confidence}`;
     }
 
     // Event listener
