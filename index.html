@@ -75,7 +75,7 @@
 
     async function loadModel() {
       try {
-        const modelUrl = `https://huggingface.co/${HF_REPO}/resolve/main/model/model.onnx`;
+        const modelUrl = `https://huggingface.co/${HF_REPO}/resolve/main/model.onnx`;
         session = await ort.InferenceSession.create(modelUrl, {
           executionProviders: ["wasm"]
         });
