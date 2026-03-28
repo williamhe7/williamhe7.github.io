@@ -136,41 +136,36 @@
     }
 
     async function runInference(file) {
-      if (!session) {
-          await loadModel();
-      }
+      if (!session) await loadModel();
       if (Object.keys(charTable).length === 0) {
-          document.getElementById("result").innerHTML = "Character table not loaded yet.";
+          document.getElementById("result").innerHTML = "Character table not loaded.";
           return;
       }
   
       const inputTensor = await preprocessImage(file);
   
-      // ✅ FIXED: Try both common input names
+      // ✅ Use the correct input name that your model actually expects
       const feeds = {
-          "input": inputTensor,      // most common
-          "input.1": inputTensor     // what PyTorch often uses
+          "input.1": inputTensor          // ← This is the most common default from torch.onnx.export
       };
   
       try {
           const results = await session.run(feeds);
   
-          // Get the output - try common output names
+          // Get logits (try common output names)
           let logits;
           if (results.output) {
               logits = Array.from(results.output.data);
           } else if (results["output.1"]) {
               logits = Array.from(results["output.1"].data);
           } else {
-              // Fallback: take the first output
-              logits = Array.from(Object.values(results)[0].data);
+              logits = Array.from(Object.values(results)[0].data); // fallback
           }
   
           const probs = softmax(logits);
   
           let maxProb = 0;
           let predIdx = 0;
-  
           for (let i = 0; i < probs.length; i++) {
               if (probs[i] > maxProb) {
                   maxProb = probs[i];
@@ -178,7 +173,7 @@
               }
           }
   
-          const character = charTable[predIdx] || `Unknown (${predIdx})`;
+          const character = charTable[predIdx] || `Class ${predIdx}`;
           const confidence = (maxProb * 100).toFixed(1) + "%";
   
           document.getElementById("result").innerHTML = 
@@ -186,7 +181,7 @@
   
       } catch (err) {
           console.error("Inference error:", err);
-          document.getElementById("result").innerHTML = "Inference failed. Check console.";
+          document.getElementById("result").innerHTML = `Inference error: ${err.message}`;
       }
     }
 
